@@ -44,7 +44,8 @@ class MapPage extends StatefulWidget {
   State<MapPage> createState() => _MapPageState();
 }
 
-class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
+class _MapPageState extends State<MapPage>
+    with SingleTickerProviderStateMixin {
   final MapController mapController = MapController();
 
   LatLng deviceLocation = LatLng(23.8103, 90.4125);
@@ -56,10 +57,7 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   String userCity = "";
   String userAddress = "";
 
-  double temp = 0;
-  double hum = 0;
-  double gas = 0;
-  double speed = 0;
+  double temp = 0, hum = 0, gas = 0, speed = 0;
 
   bool alarmState = false;
 
@@ -67,6 +65,12 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
 
   late AnimationController _controller;
   Animation<LatLng>? _animation;
+
+  bool isConnecting = true;
+  bool isConnected = false;
+
+  Timer? reconnectTimer;
+  int retryCount = 0;
 
   @override
   void initState() {
@@ -84,52 +88,45 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   @override
   void dispose() {
     _controller.dispose();
+    reconnectTimer?.cancel();
     super.dispose();
   }
 
+  // 📍 USER LOCATION
   Future<void> getUserLocation() async {
-    LocationPermission permission;
-
-    permission = await Geolocator.checkPermission();
+    LocationPermission permission = await Geolocator.checkPermission();
 
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
     }
 
-    if (permission == LocationPermission.deniedForever) {
-      return; // user permanently denied
-    }
+    if (permission == LocationPermission.deniedForever) return;
 
-    Position pos = await Geolocator.getCurrentPosition(
-      desiredAccuracy: LocationAccuracy.high,
-    );
+    Position pos = await Geolocator.getCurrentPosition();
 
     userLocation = LatLng(pos.latitude, pos.longitude);
-
     await getAddress(pos.latitude, pos.longitude, true);
 
     setState(() {});
   }
 
+  // 🌍 ADDRESS
   Future<void> getAddress(double lat, double lng, bool isUser) async {
     final url = Uri.parse(
-      "https://nominatim.openstreetmap.org/reverse?format=json&lat=$lat&lon=$lng",
-    );
+        "https://nominatim.openstreetmap.org/reverse?format=json&lat=$lat&lon=$lng");
 
     final res = await http.get(url, headers: {"User-Agent": "FlutterApp"});
     final data = jsonDecode(res.body);
 
     setState(() {
       if (isUser) {
-        userCity =
-            data["address"]["city"] ??
+        userCity = data["address"]["city"] ??
             data["address"]["town"] ??
             data["address"]["village"] ??
             "Unknown";
         userAddress = data["display_name"] ?? "";
       } else {
-        deviceCity =
-            data["address"]["city"] ??
+        deviceCity = data["address"]["city"] ??
             data["address"]["town"] ??
             data["address"]["village"] ??
             "Unknown";
@@ -138,63 +135,113 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     });
   }
 
+  // 🔌 MQTT CONNECT (HiveMQ)
   Future<void> connectMQTT() async {
+    setState(() => isConnecting = true);
+
     client = MqttServerClient(
-      'test.mosquitto.org',
+      'broker.hivemq.com',
       'client_${DateTime.now().millisecondsSinceEpoch}',
     );
 
     client.port = 1883;
     client.keepAlivePeriod = 20;
 
-    client.connectionMessage = MqttConnectMessage()
-        .withClientIdentifier('flutter')
-        .startClean();
+    client.onDisconnected = onDisconnected;
 
-    await client.connect();
+    client.connectionMessage =
+        MqttConnectMessage().withClientIdentifier('flutter').startClean();
 
-    client.subscribe('kidsgurd/data', MqttQos.atMostOnce);
+    try {
+      await client.connect().timeout(const Duration(seconds: 5));
 
-    client.updates!.listen((events) async {
-      final msg = events[0].payload as MqttPublishMessage;
-      final data = jsonDecode(
-        MqttPublishPayload.bytesToStringAsString(msg.payload.message),
-      );
+      if (client.connectionStatus!.state ==
+          MqttConnectionState.connected) {
+        setState(() {
+          isConnecting = false;
+          isConnected = true;
+        });
 
-      LatLng newDevice = LatLng(data['lat'], data['lng']);
+        retryCount = 0;
+        reconnectTimer?.cancel();
 
-      previousDeviceLocation = deviceLocation;
-
-      double durationMs = (speed > 0) ? (2000 / speed).clamp(300, 1500) : 1000;
-
-      _controller.duration = Duration(milliseconds: durationMs.toInt());
-
-      _animation =
-          LatLngTween(begin: previousDeviceLocation, end: newDevice).animate(
-            CurvedAnimation(parent: _controller, curve: Curves.linear),
-          )..addListener(() {
-            setState(() {
-              deviceLocation = _animation!.value;
-            });
-          });
-
-      _controller.forward(from: 0);
-
+        client.subscribe('kidsgurd/data', MqttQos.atMostOnce);
+        client.updates!.listen(onMessage);
+      } else {
+        throw Exception("Connection failed");
+      }
+    } catch (e) {
       setState(() {
-        temp = (data['temp'] ?? 0).toDouble();
-        hum = (data['hum'] ?? 0).toDouble();
-        gas = (data['gas'] ?? 0).toDouble();
-        speed = (data['speed'] ?? 0).toDouble();
+        isConnecting = false;
+        isConnected = false;
       });
 
-      await getAddress(newDevice.latitude, newDevice.longitude, false);
-    });
+      startAutoReconnect();
+    }
   }
 
-  // 🚨 MQTT ALARM
+  // 🔄 AUTO RECONNECT (SMART)
+  void startAutoReconnect() {
+    reconnectTimer?.cancel();
+
+    reconnectTimer =
+        Timer.periodic(const Duration(seconds: 10), (timer) {
+          if (!isConnected) {
+            retryCount++;
+
+            int delay = (retryCount * 5).clamp(5, 60);
+
+            print("🔄 Retry $retryCount in $delay sec");
+
+            Future.delayed(Duration(seconds: delay), () {
+              connectMQTT();
+            });
+          } else {
+            retryCount = 0;
+            timer.cancel();
+          }
+        });
+  }
+
+  void onDisconnected() {
+    setState(() => isConnected = false);
+    startAutoReconnect();
+  }
+
+  // 📡 RECEIVE DATA
+  void onMessage(List<MqttReceivedMessage<MqttMessage>> events) async {
+    final msg = events[0].payload as MqttPublishMessage;
+    final data = jsonDecode(
+      MqttPublishPayload.bytesToStringAsString(msg.payload.message),
+    );
+
+    LatLng newDevice = LatLng(data['lat'], data['lng']);
+
+    previousDeviceLocation = deviceLocation;
+
+    _animation = LatLngTween(
+      begin: previousDeviceLocation,
+      end: newDevice,
+    ).animate(_controller)
+      ..addListener(() {
+        setState(() => deviceLocation = _animation!.value);
+      });
+
+    _controller.forward(from: 0);
+
+    setState(() {
+      temp = (data['temp'] ?? 0).toDouble();
+      hum = (data['hum'] ?? 0).toDouble();
+      gas = (data['gas'] ?? 0).toDouble();
+      speed = (data['speed'] ?? 0).toDouble();
+    });
+
+    await getAddress(newDevice.latitude, newDevice.longitude, false);
+  }
+
+  // 🚨 SEND ALARM
   void sendAlarmData() {
     final builder = MqttClientPayloadBuilder();
-
     builder.addString(jsonEncode({"alarm": alarmState ? 1 : 0}));
 
     client.publishMessage(
@@ -204,179 +251,87 @@ class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
     );
   }
 
-  // 🗺️ FIXED GOOGLE MAP NAVIGATION (FORCE APP OPEN)
+  // 🗺️ NAVIGATION
   Future<void> openGoogleMapsRoute() async {
     if (userLocation == null) return;
 
-    final url =
-        "google.navigation:q=${deviceLocation.latitude},${deviceLocation.longitude}&mode=d";
+    final uri = Uri.parse(
+        "google.navigation:q=${deviceLocation.latitude},${deviceLocation.longitude}");
 
-    final uri = Uri.parse(url);
-
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
-    } else {
-      // fallback
-      final fallbackUrl =
-          "https://www.google.com/maps/dir/?api=1"
-          "&origin=${userLocation!.latitude},${userLocation!.longitude}"
-          "&destination=${deviceLocation.latitude},${deviceLocation.longitude}"
-          "&travelmode=driving";
-
-      await launchUrl(
-        Uri.parse(fallbackUrl),
-        mode: LaunchMode.externalApplication,
-      );
-    }
-  }
-
-  Widget buildCard(String title, String city, String address, Color color) {
-    return Container(
-      width: 200,
-      padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(10),
-        boxShadow: const [BoxShadow(blurRadius: 5)],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            title,
-            style: TextStyle(fontWeight: FontWeight.bold, color: color),
-          ),
-          Text(city),
-          Text(address, maxLines: 2, overflow: TextOverflow.ellipsis),
-          const SizedBox(height: 5),
-          Text("🌡 $temp °C"),
-          Text("💧 $hum %"),
-          Text("🔥 $gas"),
-          Text("🚗 $speed km/h"),
-        ],
-      ),
-    );
-  }
-
-  Widget deviceInfo() =>
-      buildCard("📍 DEVICE", deviceCity, deviceAddress, Colors.red);
-
-  Widget userInfo() {
-    if (userLocation == null) return const SizedBox();
-    return buildCard("📍 USER", userCity, userAddress, Colors.blue);
+    await launchUrl(uri, mode: LaunchMode.externalApplication);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        leading: Icon(Icons.child_care),
-        title: Text("Kids Guard", style: TextStyle(color: Colors.white)),
-        backgroundColor: Colors.blue[700],
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadiusGeometry.circular(20)
-        ),
+        title: const Text("Kids Guard"),
+        actions: [
+          Padding(
+            padding: const EdgeInsets.all(8),
+            child: Center(
+              child: Text(
+                isConnected ? "🟢 Connected" : "🔴 Offline",
+                style: const TextStyle(color: Colors.white),
+              ),
+            ),
+          ),
+        ],
       ),
-      backgroundColor: Colors.blue,
-      bottomNavigationBar: BottomNavigationBar(items: [
-        BottomNavigationBarItem(icon: Icon(Icons.home, color: Colors.black,), label: 'home'),
-        BottomNavigationBarItem(icon: Icon(Icons.alarm, color: Colors.black,), label: 'Alarm'),
-        BottomNavigationBarItem(icon: Icon(Icons.notifications, color: Colors.black,), label: 'home'),
-
-      ]),
 
       body: Stack(
         children: [
           FlutterMap(
             mapController: mapController,
-            options: MapOptions(initialCenter: deviceLocation, initialZoom: 15),
+            options:
+            MapOptions(initialCenter: deviceLocation, initialZoom: 15),
             children: [
               TileLayer(
                 urlTemplate:
-                    "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
                 subdomains: const ['a', 'b', 'c', 'd'],
               ),
-
-              PolylineLayer(
-                polylines: [
-                  if (userLocation != null)
-                    Polyline(
-                      points: [userLocation!, deviceLocation],
-                      strokeWidth: 4,
-                      color: Colors.red,
-                    ),
-                ],
-              ),
-
-              MarkerLayer(
-                markers: [
-                  if (userLocation != null)
-                    Marker(
-                      point: userLocation!,
-                      width: 80,
-                      height: 80,
-                      child: const Icon(
-                        Icons.person_pin_circle,
-                        color: Colors.blue,
-                        size: 40,
-                      ),
-                    ),
+              MarkerLayer(markers: [
+                if (userLocation != null)
                   Marker(
-                    point: deviceLocation,
-                    width: 80,
-                    height: 80,
-                    child: const Icon(
-                      Icons.location_pin,
-                      color: Colors.red,
-                      size: 40,
-                    ),
+                    point: userLocation!,
+                    child: const Icon(Icons.person, color: Colors.blue),
                   ),
-                ],
-              ),
+                Marker(
+                  point: deviceLocation,
+                  child: const Icon(Icons.location_pin, color: Colors.red),
+                ),
+              ]),
             ],
           ),
 
-          Positioned(top: 40, left: 10, child: userInfo()),
-          Positioned(top: 40, right: 10, child: deviceInfo()),
-
-          Positioned(
-            bottom: 30,
-            right: 20,
-            child: Column(
-              children: [
-                FloatingActionButton(
-                  heroTag: "focus",
-                  backgroundColor: Colors.black,
-                  child: const Icon(Icons.my_location),
-                  onPressed: () {
-                    mapController.move(deviceLocation, 18);
-                  },
-                ),
-                const SizedBox(height: 10),
-
-                FloatingActionButton(
-                  heroTag: "map",
-                  backgroundColor: Colors.green,
-                  child: const Icon(Icons.directions),
-                  onPressed: openGoogleMapsRoute,
-                ),
-
-                const SizedBox(height: 10),
-
-                FloatingActionButton(
-                  heroTag: "alarm",
-                  backgroundColor: alarmState ? Colors.red : Colors.grey,
-                  child: Icon(alarmState ? Icons.alarm_on : Icons.alarm_off),
-                  onPressed: () {
-                    setState(() {
-                      alarmState = !alarmState;
-                    });
-                    sendAlarmData();
-                  },
-                ),
-              ],
+          // 🔄 RECONNECT BUTTON
+          if (!isConnected && !isConnecting)
+            Positioned(
+              top: 80,
+              right: 20,
+              child: ElevatedButton(
+                onPressed: connectMQTT,
+                child: const Text("Reconnect"),
+              ),
             ),
-          ),
+
+          // ⏳ LOADING
+          if (isConnecting)
+            Container(
+              color: Colors.black54,
+              child: const Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    CircularProgressIndicator(color: Colors.white),
+                    SizedBox(height: 10),
+                    Text("Connecting...",
+                        style: TextStyle(color: Colors.white)),
+                  ],
+                ),
+              ),
+            ),
         ],
       ),
     );
