@@ -26,8 +26,7 @@ class MyApp extends StatelessWidget {
 }
 
 class LatLngTween extends Tween<LatLng> {
-  LatLngTween({LatLng? begin, LatLng? end})
-      : super(begin: begin, end: end);
+  LatLngTween({LatLng? begin, LatLng? end}) : super(begin: begin, end: end);
 
   @override
   LatLng lerp(double t) {
@@ -45,8 +44,7 @@ class MapPage extends StatefulWidget {
   State<MapPage> createState() => _MapPageState();
 }
 
-class _MapPageState extends State<MapPage>
-    with SingleTickerProviderStateMixin {
+class _MapPageState extends State<MapPage> with SingleTickerProviderStateMixin {
   final MapController mapController = MapController();
 
   LatLng deviceLocation = LatLng(23.8103, 90.4125);
@@ -123,13 +121,15 @@ class _MapPageState extends State<MapPage>
 
     setState(() {
       if (isUser) {
-        userCity = data["address"]["city"] ??
+        userCity =
+            data["address"]["city"] ??
             data["address"]["town"] ??
             data["address"]["village"] ??
             "Unknown";
         userAddress = data["display_name"] ?? "";
       } else {
-        deviceCity = data["address"]["city"] ??
+        deviceCity =
+            data["address"]["city"] ??
             data["address"]["town"] ??
             data["address"]["village"] ??
             "Unknown";
@@ -147,8 +147,9 @@ class _MapPageState extends State<MapPage>
     client.port = 1883;
     client.keepAlivePeriod = 20;
 
-    client.connectionMessage =
-        MqttConnectMessage().withClientIdentifier('flutter').startClean();
+    client.connectionMessage = MqttConnectMessage()
+        .withClientIdentifier('flutter')
+        .startClean();
 
     await client.connect();
 
@@ -164,23 +165,18 @@ class _MapPageState extends State<MapPage>
 
       previousDeviceLocation = deviceLocation;
 
-      double durationMs =
-      (speed > 0) ? (2000 / speed).clamp(300, 1500) : 1000;
+      double durationMs = (speed > 0) ? (2000 / speed).clamp(300, 1500) : 1000;
 
       _controller.duration = Duration(milliseconds: durationMs.toInt());
 
-      _animation = LatLngTween(
-        begin: previousDeviceLocation,
-        end: newDevice,
-      ).animate(CurvedAnimation(
-        parent: _controller,
-        curve: Curves.linear,
-      ))
-        ..addListener(() {
-          setState(() {
-            deviceLocation = _animation!.value;
+      _animation =
+          LatLngTween(begin: previousDeviceLocation, end: newDevice).animate(
+            CurvedAnimation(parent: _controller, curve: Curves.linear),
+          )..addListener(() {
+            setState(() {
+              deviceLocation = _animation!.value;
+            });
           });
-        });
 
       _controller.forward(from: 0);
 
@@ -199,9 +195,7 @@ class _MapPageState extends State<MapPage>
   void sendAlarmData() {
     final builder = MqttClientPayloadBuilder();
 
-    builder.addString(jsonEncode({
-      "alarm": alarmState ? 1 : 0,
-    }));
+    builder.addString(jsonEncode({"alarm": alarmState ? 1 : 0}));
 
     client.publishMessage(
       "kidsgurd/senddata",
@@ -229,8 +223,10 @@ class _MapPageState extends State<MapPage>
           "&destination=${deviceLocation.latitude},${deviceLocation.longitude}"
           "&travelmode=driving";
 
-      await launchUrl(Uri.parse(fallbackUrl),
-          mode: LaunchMode.externalApplication);
+      await launchUrl(
+        Uri.parse(fallbackUrl),
+        mode: LaunchMode.externalApplication,
+      );
     }
   }
 
@@ -246,12 +242,12 @@ class _MapPageState extends State<MapPage>
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title,
-              style: TextStyle(
-                  fontWeight: FontWeight.bold, color: color)),
+          Text(
+            title,
+            style: TextStyle(fontWeight: FontWeight.bold, color: color),
+          ),
           Text(city),
-          Text(address,
-              maxLines: 2, overflow: TextOverflow.ellipsis),
+          Text(address, maxLines: 2, overflow: TextOverflow.ellipsis),
           const SizedBox(height: 5),
           Text("🌡 $temp °C"),
           Text("💧 $hum %"),
@@ -262,38 +258,42 @@ class _MapPageState extends State<MapPage>
     );
   }
 
-  Widget deviceInfo() => buildCard(
-    "📍 DEVICE",
-    deviceCity,
-    deviceAddress,
-    Colors.red,
-  );
+  Widget deviceInfo() =>
+      buildCard("📍 DEVICE", deviceCity, deviceAddress, Colors.red);
 
   Widget userInfo() {
     if (userLocation == null) return const SizedBox();
-    return buildCard(
-      "📍 USER",
-      userCity,
-      userAddress,
-      Colors.blue,
-    );
+    return buildCard("📍 USER", userCity, userAddress, Colors.blue);
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        leading: Icon(Icons.child_care),
+        title: Text("Kids Guard", style: TextStyle(color: Colors.white)),
+        backgroundColor: Colors.blue[700],
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadiusGeometry.circular(20)
+        ),
+      ),
+      backgroundColor: Colors.blue,
+      bottomNavigationBar: BottomNavigationBar(items: [
+        BottomNavigationBarItem(icon: Icon(Icons.home, color: Colors.black,), label: 'home'),
+        BottomNavigationBarItem(icon: Icon(Icons.alarm, color: Colors.black,), label: 'Alarm'),
+        BottomNavigationBarItem(icon: Icon(Icons.notifications, color: Colors.black,), label: 'home'),
+
+      ]),
+
       body: Stack(
         children: [
           FlutterMap(
             mapController: mapController,
-            options: MapOptions(
-              initialCenter: deviceLocation,
-              initialZoom: 15,
-            ),
+            options: MapOptions(initialCenter: deviceLocation, initialZoom: 15),
             children: [
               TileLayer(
                 urlTemplate:
-                "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
+                    "https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png",
                 subdomains: const ['a', 'b', 'c', 'd'],
               ),
 
@@ -365,10 +365,8 @@ class _MapPageState extends State<MapPage>
 
                 FloatingActionButton(
                   heroTag: "alarm",
-                  backgroundColor:
-                  alarmState ? Colors.red : Colors.grey,
-                  child: Icon(
-                      alarmState ? Icons.alarm_on : Icons.alarm_off),
+                  backgroundColor: alarmState ? Colors.red : Colors.grey,
+                  child: Icon(alarmState ? Icons.alarm_on : Icons.alarm_off),
                   onPressed: () {
                     setState(() {
                       alarmState = !alarmState;
